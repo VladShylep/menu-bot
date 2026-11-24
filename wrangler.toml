@@ -1,0 +1,15 @@
+name = "menu-bot"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Щоранку о 06:00 UTC (07:00 взимку / 08:00 влітку за Варшавою)
+[triggers]
+crons = ["0 6 * * *"]
+
+# Несекретні налаштування. Секрети додаються через `wrangler secret put` (див. README).
+[vars]
+TIMEZONE = "Europe/Warsaw"
+PERSONS = "2"
+FORECAST_DAYS = "2"
+CLAUDE_MODEL = "claude-opus-5-5"

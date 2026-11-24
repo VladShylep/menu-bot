@@ -1,0 +1,8 @@
+# Скопіюй у .dev.vars для локального запуску (`npm run dev`). .dev.vars НЕ комітиться.
+TELEGRAM_BOT_TOKEN=123456:ABC...
+TELEGRAM_WEBHOOK_SECRET=будь-який-довгий-випадковий-рядок
+GROUP_CHAT_ID=-1001234567890
+ANTHROPIC_API_KEY=sk-ant-...
+SPREADSHEET_ID=1AbC...xyz
+# Увесь JSON-ключ service account одним рядком
+GOOGLE_SERVICE_ACCOUNT_JSON={"type":"service_account","client_email":"...","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"}

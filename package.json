@@ -1,0 +1,24 @@
+{
+  "name": "menu-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram-бот «Меню й закупи»: меню на тиждень, запаси й прогноз закупів (Cloudflare Workers + Google Sheets + Claude)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js",
+    "webhook": "node scripts/set-webhook.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
+    "grammy": "^1.48.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
