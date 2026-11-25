@@ -2,7 +2,7 @@
   "name": "menu-bot",
   "version": "0.1.0",
   "private": true,
-  "description": "Telegram-бот «Меню й закупи»: меню на тиждень, запаси й прогноз закупів (Cloudflare Workers + Google Sheets + Claude)",
+  "description": "Telegram-бот «Меню й закупи»: меню на тиждень, запаси й прогноз закупів (Cloudflare Workers + Google Sheets + Gemini)",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
@@ -12,7 +12,6 @@
     "webhook": "node scripts/set-webhook.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.14.0",
     "grammy": "^1.48.0"
   },
   "devDependencies": {

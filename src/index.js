@@ -28,7 +28,7 @@ export default {
 
     try {
       const { bot } = await createBot(env);
-      // Обробляємо синхронно: Workers не обмежують час очікування мережі (Claude, Sheets),
+      // Обробляємо синхронно: Workers не обмежують час очікування мережі (Gemini, Sheets),
       // а відповідь 200 після обробки гарантує, що Telegram не повторить апдейт.
       await bot.handleUpdate(update);
     } catch (err) {

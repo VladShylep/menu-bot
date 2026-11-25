@@ -1,4 +1,4 @@
-// Наскрізний тест Worker'а без мережі: Telegram, Google Sheets і Claude API підмінено в fetch.
+// Наскрізний тест Worker'а без мережі: Telegram, Google Sheets і Gemini API підмінено в fetch.
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { test } from 'node:test';
@@ -7,8 +7,8 @@ import { test } from 'node:test';
 
 const tabs = new Map(); // назва вкладки -> 2D-масив
 const sent = []; // повідомлення, які бот надіслав у Telegram
-const claudeQueue = []; // заготовлені відповіді Claude
-const claudeRequests = [];
+const geminiQueue = []; // заготовлені відповіді Gemini (масиви parts)
+const geminiRequests = [];
 
 function parseRange(encoded) {
   const r = decodeURIComponent(encoded);
@@ -51,11 +51,11 @@ globalThis.fetch = async (input, init = {}) => {
     return json({ ok: true, result: apiMethod === 'sendMessage' ? { message_id: sent.length, chat: { id: payload.chat_id }, date: 0 } : true });
   }
 
-  if (url.host === 'api.anthropic.com') {
-    claudeRequests.push(body);
-    const next = claudeQueue.shift();
-    assert.ok(next, 'неочікуваний запит до Claude');
-    return json({ id: 'msg', type: 'message', role: 'assistant', model: body.model, usage: { input_tokens: 1, output_tokens: 1 }, ...next });
+  if (url.host === 'generativelanguage.googleapis.com') {
+    geminiRequests.push({ url: url.pathname, apiKey: new Headers(init.headers).get('x-goog-api-key'), ...body });
+    const next = geminiQueue.shift();
+    assert.ok(next, 'неочікуваний запит до Gemini');
+    return json({ candidates: [{ content: { role: 'model', parts: next }, finishReason: 'STOP' }] });
   }
 
   throw new Error(`Неочікуваний fetch ${url}`);
@@ -66,13 +66,13 @@ const env = {
   TELEGRAM_BOT_TOKEN: '1:abc',
   TELEGRAM_WEBHOOK_SECRET: 'secret',
   GROUP_CHAT_ID: '-100',
-  ANTHROPIC_API_KEY: 'sk-test',
+  GEMINI_API_KEY: 'gemini-test-key',
   SPREADSHEET_ID: 'sheet',
   GOOGLE_SERVICE_ACCOUNT_JSON: JSON.stringify({ client_email: 'bot@x.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) }),
   TIMEZONE: 'Europe/Warsaw',
   PERSONS: '2',
   FORECAST_DAYS: '2',
-  CLAUDE_MODEL: 'claude-opus-5-5',
+  GEMINI_MODEL: 'gemini-3.5-flash-lite',
 };
 
 const worker = (await import('../src/index.js')).default;
@@ -111,27 +111,32 @@ test('чужий чат ігнорується', async () => {
 
 test('повідомлення не про їжу — бот мовчить', async () => {
   const before = sent.length;
-  claudeQueue.push({ content: [{ type: 'text', text: '<SILENT>' }], stop_reason: 'end_turn' });
+  geminiQueue.push([{ text: '<SILENT>' }]);
   await post(msg('ти бачив новий фільм?'));
   assert.equal(sent.length, before);
-  assert.equal(claudeRequests.at(-1).model, 'claude-opus-5-5');
-  assert.equal(claudeRequests.at(-1).fallbacks, 'default');
+  const req = geminiRequests.at(-1);
+  assert.equal(req.url, '/v1beta/models/gemini-3.5-flash-lite:generateContent');
+  assert.equal(req.apiKey, 'gemini-test-key');
+  assert.match(req.systemInstruction.parts[0].text, /<SILENT>/);
+  const decls = req.tools[0].functionDeclarations;
+  assert.equal(decls.length, 8);
+  assert.ok(!JSON.stringify(decls).includes('additionalProperties'));
+  assert.equal(decls.find((d) => d.name === 'get_stock').parameters, undefined);
 });
 
 test('«купив гречку» оновлює запаси й записує покупку через інструмент', async () => {
-  claudeQueue.push({
-    content: [{ type: 'tool_use', id: 'tu1', name: 'update_stock', input: { changes: [
-      { product: 'гречка', quantity: 1, unit: 'кг', action: 'bought' },
-      { product: 'курячі стегна', quantity: 600, unit: 'г', action: 'bought' },
-    ] } }],
-    stop_reason: 'tool_use',
-  });
-  claudeQueue.push({ content: [{ type: 'text', text: 'Записав: гречка 1 кг, стегна 600 г 👍' }], stop_reason: 'end_turn' });
+  geminiQueue.push([{ functionCall: { name: 'update_stock', args: { changes: [
+    { product: 'гречка', quantity: 1, unit: 'кг', action: 'bought' },
+    { product: 'курячі стегна', quantity: 600, unit: 'г', action: 'bought' },
+  ] } } }]);
+  geminiQueue.push([{ text: 'Записав: гречка 1 кг, стегна 600 г 👍' }]);
   await post(msg('купив кіло гречки і стегна'));
 
-  const toolResult = claudeRequests.at(-1).messages.at(-1).content[0];
-  assert.equal(toolResult.type, 'tool_result');
-  assert.match(toolResult.content, /гречка: тепер 1 кг/);
+  const last = geminiRequests.at(-1).contents.at(-1);
+  assert.equal(last.role, 'user');
+  const fr = last.parts[0].functionResponse;
+  assert.equal(fr.name, 'update_stock');
+  assert.match(fr.response.result, /гречка: тепер 1 кг/);
   assert.deepEqual(tab('Запаси')[1].slice(0, 4), ['гречка', 1000, 'г', 'Бакалія']);
   assert.equal(tab('Покупки').length, 3);
   assert.equal(tab('Покупки')[1][1], 'Maks');
@@ -139,18 +144,14 @@ test('«купив гречку» оновлює запаси й записує 
 });
 
 test('агент складає меню-чернетку, бот показує його з кнопкою, а затвердження дає список покупок', async () => {
-  claudeQueue.push({
-    content: [{ type: 'tool_use', id: 'tu2', name: 'save_menu', input: { status: 'чернетка', cooks: [
-      { date: today, meal: 'сніданок', dish: 'Вівсянка з бананом', days: 3 },
-      { date: today, meal: 'обід', dish: 'Гречка з курячими стегнами', days: 3 },
-      { date: today, meal: 'вечеря', dish: 'Плов з куркою', days: 3 },
-    ] } }],
-    stop_reason: 'tool_use',
-  });
-  claudeQueue.push({ content: [{ type: 'text', text: 'Зробив меню, спершу використав гречку.' }], stop_reason: 'end_turn' });
+  geminiQueue.push([{ functionCall: { name: 'save_menu', args: { status: 'чернетка', cooks: [
+    { date: today, meal: 'сніданок', dish: 'Вівсянка з бананом', days: 3 },
+    { date: today, meal: 'обід', dish: 'Гречка з курячими стегнами', days: 3 },
+    { date: today, meal: 'вечеря', dish: 'Плов з куркою', days: 3 },
+  ] } } }]);
+  geminiQueue.push([{ text: 'Зробив меню, спершу використав гречку.' }]);
   await post({ ...msg('/menu'), message: { ...msg('/menu').message, entities: [{ type: 'bot_command', offset: 0, length: 5 }] } });
 
-  assert.equal(claudeRequests.at(-1).output_config.effort, 'medium');
   const draft = sent.filter((s) => s.method === 'sendMessage').at(-1);
   assert.match(draft.text, /Чернетка меню/);
   assert.match(JSON.stringify(draft.reply_markup), /menu:approve/);

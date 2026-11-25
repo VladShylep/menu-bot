@@ -37,7 +37,7 @@ export async function createBot(env) {
   // /chatid працює будь-де, щоб дізнатися id групи для налаштування.
   bot.command('chatid', (ctx) => ctx.reply(`id цього чату: ${ctx.chat.id}`));
 
-  // Далі — лише в «своїй» групі, щоб чужі чати не витрачали ліміти Claude API.
+  // Далі — лише в «своїй» групі, щоб чужі чати не витрачали ліміти Gemini API.
   bot.use(async (ctx, next) => {
     if (groupId && String(ctx.chat?.id) !== groupId) {
       if (ctx.chat?.type === 'private' && ctx.message?.text?.startsWith('/start')) {
@@ -82,7 +82,6 @@ export async function createBot(env) {
     const res = await agent.handle({
       text: `Склади нове меню на 7 днів, починаючи з сьогодні. ${extra}`.trim(),
       who: whoOf(ctx),
-      effort: 'medium',
     });
     if (res?.text) await ctx.reply(res.text);
     if (res?.menuSaved) await ctx.reply(await service.formatMenu(), { reply_markup: menuKeyboard() });

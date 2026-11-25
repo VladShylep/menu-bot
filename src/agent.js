@@ -1,8 +1,7 @@
-// LLM-агент на Claude API з tool use. Розбирає вільний текст у групі
-// («купив гречку», «закінчився рис», «що приготувати на вечерю», «заміни страву»)
+// LLM-агент на Google Gemini API з function calling (REST, без SDK). Розбирає вільний текст
+// у групі («купив гречку», «закінчився рис», «що приготувати на вечерю», «заміни страву»)
 // і сам вирішує, чи повідомлення стосується їжі. Якщо ні — повертає null і бот мовчить.
 
-import Anthropic from '@anthropic-ai/sdk';
 import { weekday } from './dates.js';
 import { MEALS } from './planner.js';
 import { formatQty } from './units.js';
@@ -132,16 +131,49 @@ const TOOLS = [
   },
 ];
 
-// Моделі, для яких API підтримує серверний fallback при відмові (refusal).
-const SUPPORTS_FALLBACK = /^claude-(opus-5|fable-5|sonnet-5-5)/;
+const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+// Gemini приймає підмножину OpenAPI-схеми: additionalProperties не підтримується.
+function cleanSchema(schema) {
+  if (Array.isArray(schema)) return schema.map(cleanSchema);
+  if (!schema || typeof schema !== 'object') return schema;
+  const out = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (k === 'additionalProperties') continue;
+    out[k] = cleanSchema(v);
+  }
+  return out;
+}
+
+const FUNCTION_DECLARATIONS = TOOLS.map(({ name, description, input_schema }) => {
+  const decl = { name, description };
+  // Для інструментів без параметрів поле parameters потрібно опустити.
+  if (Object.keys(input_schema.properties ?? {}).length) decl.parameters = cleanSchema(input_schema);
+  return decl;
+});
 
 export class Agent {
   constructor(env, service) {
     this.env = env;
     this.service = service;
-    this.client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-    this.model = env.CLAUDE_MODEL || 'claude-opus-5-5';
+    this.apiKey = env.GEMINI_API_KEY;
+    this.model = env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
     this.menuSaved = false;
+  }
+
+  async generate(contents) {
+    const res = await fetch(`${API_BASE}/${encodeURIComponent(this.model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': this.apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents,
+        tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+        toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+      }),
+    });
+    if (!res.ok) throw new Error(`Gemini API ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    return res.json();
   }
 
   async runTool(name, input, who) {
@@ -184,9 +216,8 @@ export class Agent {
 
   /**
    * Обробляє одне повідомлення. Повертає { text, menuSaved } або null, якщо бот має мовчати.
-   * effort: 'low' для звичайних повідомлень, 'medium' для складання меню.
    */
-  async handle({ text, who, replyTo, effort = 'low' }) {
+  async handle({ text, who, replyTo }) {
     const today = this.service.today();
     const context = [
       `Сьогодні ${today} (${weekday(today)}).`,
@@ -196,56 +227,42 @@ export class Agent {
       text,
     ].filter((l) => l !== '').join('\n');
 
-    const messages = [{ role: 'user', content: context }];
+    const contents = [{ role: 'user', parts: [{ text: context }] }];
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      const params = {
-        model: this.model,
-        max_tokens: 16000,
-        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-        tools: TOOLS,
-        messages,
-        thinking: { type: 'adaptive' },
-        output_config: { effort },
-      };
-      let response;
-      if (SUPPORTS_FALLBACK.test(this.model)) {
-        response = await this.client.beta.messages.create({
-          ...params,
-          betas: ['server-side-fallback-2026-07-01'],
-          fallbacks: 'default',
-        });
-      } else {
-        response = await this.client.messages.create(params);
+      const response = await this.generate(contents);
+      const candidate = response.candidates?.[0];
+
+      if (response.promptFeedback?.blockReason || !candidate?.content?.parts) {
+        const blocked = response.promptFeedback?.blockReason || ['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST'].includes(candidate?.finishReason);
+        if (blocked) return { text: 'Вибач, з цим я допомогти не можу 🙏', menuSaved: this.menuSaved };
+        return this.menuSaved ? { text: '', menuSaved: this.menuSaved } : null;
       }
 
-      if (response.stop_reason === 'refusal') {
-        return { text: 'Вибач, з цим я допомогти не можу 🙏', menuSaved: this.menuSaved };
-      }
+      // Частини відповіді (разом із thought signature) повертаємо моделі без змін.
+      const parts = candidate.content.parts;
+      contents.push({ role: 'model', parts });
 
-      messages.push({ role: 'assistant', content: response.content });
-
-      if (response.stop_reason === 'pause_turn') continue;
-
-      const toolUses = response.content.filter((b) => b.type === 'tool_use');
-      if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
-        const out = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      const calls = parts.filter((p) => p.functionCall);
+      if (calls.length === 0) {
+        const out = parts.filter((p) => p.text && !p.thought).map((p) => p.text).join('\n').trim();
         if (!out || out.includes(SILENT)) return this.menuSaved ? { text: '', menuSaved: this.menuSaved } : null;
         return { text: out, menuSaved: this.menuSaved };
       }
 
-      // Усі результати інструментів — в одному повідомленні user.
+      // Усі результати функцій — в одному повідомленні user.
       const results = [];
-      for (const tu of toolUses) {
+      for (const { functionCall: fc } of calls) {
+        let response;
         try {
-          const content = await this.runTool(tu.name, tu.input ?? {}, who);
-          results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(content) });
+          response = { result: String(await this.runTool(fc.name, fc.args ?? {}, who)) };
         } catch (err) {
-          console.error('tool error', tu.name, err);
-          results.push({ type: 'tool_result', tool_use_id: tu.id, content: `Помилка: ${err.message}`, is_error: true });
+          console.error('tool error', fc.name, err);
+          response = { error: `Помилка: ${err.message}` };
         }
+        results.push({ functionResponse: { name: fc.name, ...(fc.id ? { id: fc.id } : {}), response } });
       }
-      messages.push({ role: 'user', content: results });
+      contents.push({ role: 'user', parts: results });
     }
     return { text: 'Щось я заплутався. Спробуйте сформулювати простіше 🙂', menuSaved: this.menuSaved };
   }

@@ -10,7 +10,7 @@
 - відповідає на «що приготувати на вечерю?», «заміни борщ у четвер на плов», «додай страву…»;
 - мовчить, якщо повідомлення не про їжу.
 
-**Стек:** JavaScript (Node.js), [grammY](https://grammy.dev) (вебхук), Cloudflare Workers + Cron Triggers (безплатно), Google Sheets (база даних), Claude API з tool use.
+**Стек:** JavaScript (Node.js), [grammY](https://grammy.dev) (вебхук), Cloudflare Workers + Cron Triggers (безплатно), Google Sheets (база даних), Google Gemini API з function calling (безплатний тариф).
 
 ---
 
@@ -19,7 +19,7 @@
 ```
 Telegram ──вебхук──▶ Cloudflare Worker ──▶ grammY
                          │                  ├─ /menu, /buy, /stock … (код)
-                         │                  └─ вільний текст ──▶ Claude (tool use)
+                         │                  └─ вільний текст ──▶ Gemini (function calling)
                          │                                         └─ інструменти: запаси, страви, меню, список
                          ├─ Cron щоранку ──▶ списання + прогноз ──▶ «варто скупитись?»
                          └─ Google Sheets (Запаси, Страви, Меню, Покупки)
@@ -61,7 +61,7 @@ Telegram ──вебхук──▶ Cloudflare Worker ──▶ grammY
 
 ## Налаштування з нуля
 
-Знадобиться приблизно 30–40 хвилин. Тобі потрібні: Node.js 20 або новіший ([nodejs.org](https://nodejs.org)), git і акаунти Telegram, Google, Cloudflare й Anthropic.
+Знадобиться приблизно 30–40 хвилин. Тобі потрібні: Node.js 20 або новіший ([nodejs.org](https://nodejs.org)), git і акаунти Telegram, Google й Cloudflare.
 
 Команди нижче для PowerShell у Windows (у macOS/Linux вони такі самі, крім позначених).
 
@@ -89,11 +89,12 @@ npm test        # має бути "pass" і жодного "fail"
    ```
 5. Створи групу з другою людиною й **після** вимкнення Privacy Mode додай туди бота. Якщо бот уже був у групі, видали його й додай знову: налаштування приватності застосовується під час додавання.
 
-### 2. Ключ Claude API
+### 2. Ключ Gemini API (безплатно)
 
-1. Зайди на [console.anthropic.com](https://console.anthropic.com) → **Settings → Billing**, поповни баланс (API платний, оплата за токени).
-2. **Settings → API Keys → Create Key**. Скопіюй ключ `sk-ant-...` — це `ANTHROPIC_API_KEY`.
-3. За замовчуванням бот використовує модель `claude-opus-5-5` (змінна `CLAUDE_MODEL` у `wrangler.toml`). Кожне повідомлення в групі йде в Claude, щоб бот вирішив, чи воно про їжу. Якщо вийде задорого, постав `CLAUDE_MODEL = "claude-haiku-5-5"`: це в кілька десятків разів дешевше, але гірше розуміє складні прохання. Витрати видно в консолі Anthropic у розділі **Usage**.
+1. Відкрий [aistudio.google.com/apikey](https://aistudio.google.com/apikey) і увійди своїм Google-акаунтом (картка не потрібна).
+2. Натисни **Create API key**. Якщо попросить вибрати проєкт, обери **Create API key in new project** (або наявний проєкт `menu-bot`).
+3. Скопіюй ключ `AIza...` — це `GEMINI_API_KEY`. Нікому його не показуй.
+4. За замовчуванням бот використовує модель `gemini-3.5-flash-lite` (змінна `GEMINI_MODEL` у `wrangler.toml`). Кожне повідомлення в групі йде в Gemini, щоб бот вирішив, чи воно про їжу. На безплатному тарифі діють ліміти запитів на хвилину й на день (актуальні значення дивись у [документації](https://ai.google.dev/gemini-api/docs/rate-limits) і в AI Studio); для групи з двох людей їх зазвичай вистачає. Якщо ліміт вичерпано, бот відповість помилкою, а за хвилину-дві знову запрацює. Також на безплатному тарифі Google може використовувати запити для покращення своїх продуктів: не пишіть боту нічого конфіденційного.
 
 ### 3. Google Sheets і service account
 
@@ -125,7 +126,7 @@ npm test        # має бути "pass" і жодного "fail"
    ```powershell
    npx wrangler secret put TELEGRAM_BOT_TOKEN
    npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
-   npx wrangler secret put ANTHROPIC_API_KEY
+   npx wrangler secret put GEMINI_API_KEY
    npx wrangler secret put SPREADSHEET_ID
    ```
    JSON-ключ Google передай файлом, щоб не зламати переноси рядків:
@@ -153,7 +154,7 @@ npm run webhook -- https://menu-bot.<твій-субдомен>.workers.dev
    ```powershell
    npx wrangler secret put GROUP_CHAT_ID
    ```
-   Після цього бот реагує тільки у вашій групі, а Cron знає, куди писати. Без `GROUP_CHAT_ID` бот відповідав би в будь-якому чаті, куди його додали, і витрачав би ваш баланс Claude.
+   Після цього бот реагує тільки у вашій групі, а Cron знає, куди писати. Без `GROUP_CHAT_ID` бот відповідав би в будь-якому чаті, куди його додали, і витрачав би ваш безплатний ліміт Gemini.
 3. Напиши `/setup`: бот створить вкладки й стартову базу страв.
 4. Розкажи, що є вдома: «вдома є 2 кг картоплі, 1 кг рису, 10 яєць, пів кіло фаршу».
 5. `/menu` → подивись чернетку → **✅ Затвердити** → бот покаже, що докупити.
@@ -169,9 +170,9 @@ npm run webhook -- https://menu-bot.<твій-субдомен>.workers.dev
 | `TIMEZONE` | `Europe/Warsaw` | Часовий пояс для дат меню |
 | `PERSONS` | `2` | Скільки людей їсть |
 | `FORECAST_DAYS` | `2` | За скільки днів наперед попереджати про нестачу |
-| `CLAUDE_MODEL` | `claude-opus-5-5` | Модель Claude |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Модель Gemini |
 
-Секрети (через `wrangler secret put`, або в `.dev.vars` для локального запуску): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `GROUP_CHAT_ID`, `ANTHROPIC_API_KEY`, `SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, необов'язково `BOT_INFO`.
+Секрети (через `wrangler secret put`, або в `.dev.vars` для локального запуску): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `GROUP_CHAT_ID`, `GEMINI_API_KEY`, `SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`, необов'язково `BOT_INFO`.
 
 Після зміни `wrangler.toml` виконай `npm run deploy` ще раз.
 
@@ -193,7 +194,7 @@ npx wrangler dev --test-scheduled   # локальний запуск (секр�
 src/
   index.js        точка входу Worker: вебхук + Cron
   bot.js          команди, кнопки, вільний текст (grammY)
-  agent.js        Claude API з tool use: системний промпт та інструменти
+  agent.js        Gemini API з function calling: системний промпт та інструменти
   service.js      операції над даними: запаси, страви, меню, прогноз, ранкова перевірка
   planner.js      чиста логіка: меню → потреби → нестача → список (без мережі)
   store.js        вкладки й колонки Google Sheets
